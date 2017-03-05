@@ -1,0 +1,35 @@
+name:                package-set-pursuit
+version:             0.1.0.0
+synopsis:            Create pursuit upload for a PureScript package set
+description:         Please see README.md
+homepage:            https://github.com/nwolverson/package-set-pursuit#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Nicholas Wolverson
+maintainer:          nicholas.wolverson@gmail.com
+copyright:           2017 Nicholas Wolverson
+category:            Web
+build-type:          Simple
+cabal-version:       >=1.10
+extra-source-files:  README.md
+
+executable package-set-pursuit
+  hs-source-dirs:      src
+  main-is:             Main.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.7 && < 5
+                     , aeson -any
+                     , bytestring
+                     , containers
+                     , foldl
+                     , lens
+                     , system-filepath
+                     , text
+                     , turtle
+                     , purescript
+                     , Glob
+                     , mtl
+                     , protolude
+                     , bower-json >= 1.0.0.1 && < 1.1
+
+  default-language:    Haskell2010
