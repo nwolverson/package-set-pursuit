@@ -1,15 +1,15 @@
-resolver: lts-8.0
+resolver: lts-8.5
 packages:
 - '.'
 extra-deps:
-- purescript-0.10.7
+- purescript-0.11.6
 - pipes-http-1.0.5
-- aeson-0.11.3.0
-- bower-json-1.0.0.1
-- http-client-0.4.31.2
-- http-client-tls-0.2.4.1
-- optparse-applicative-0.13.0.0
-- pipes-4.1.9
-- websockets-0.9.6.2
+# - aeson-0.11.3.0
+# - bower-json-1.0.0.1
+# - http-client-0.4.31.2
+# - http-client-tls-0.2.4.1
+# - optparse-applicative-0.13.0.0
+# - pipes-4.1.9
+# - websockets-0.9.6.2
 flags: {}
 extra-package-dbs: []

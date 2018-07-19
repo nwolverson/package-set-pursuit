@@ -16,6 +16,7 @@ import           Control.Monad (when)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (FromJSON, ToJSON, decodeStrict, encode, (.=))
 import qualified Data.Aeson as A
+import qualified Data.List as List
 import           Data.ByteString (ByteString)
 import           Data.Foldable (for_)
 import           Data.Map (Map, toList, fromList)
@@ -30,7 +31,6 @@ import           GHC.Generics (Generic)
 import           Turtle
 import Control.Monad.Except
 import qualified Web.Bower.PackageMeta as Bower
-
 
 import qualified Data.Version as DV
 
@@ -55,7 +55,7 @@ import qualified Data.ByteString.Lazy as LB
 import qualified Data.Text as T
 
 import qualified Language.PureScript as P
-
+import Language.PureScript.Docs (Package(..), VerifiedPackage)
 import qualified Language.PureScript.Docs as D
 
 main :: IO ()
@@ -65,55 +65,29 @@ main = do
     Nothing -> die "Bad JSON file"
     Just ps -> recursePackageSet ps
 
-
----
-
-
-data Package a = Package
-  { pkgVersion              :: DV.Version
-  , pkgVersionTag           :: Text
-  -- TODO: When this field was introduced, it was given the Maybe type for the
-  -- sake of backwards compatibility, as older JSON blobs will not include the
-  -- field. It should eventually be changed to just UTCTime.
-  , pkgTagTime              :: Maybe UTCTime
-  , pkgModules              :: [D.Module]
-  , pkgModuleMap            :: Map P.ModuleName Bower.PackageName
-  , pkgResolvedDependencies :: [(PackageName, DV.Version)]
-  , pkgGithub               :: (D.GithubUser, D.GithubRepo)
-  , pkgUploader             :: a
-  , pkgCompilerVersion      :: DV.Version
-    -- ^ The version of the PureScript compiler which was used to generate
-    -- this data. We store this in order to reject packages which are too old.
+defaultPackageMeta :: Text -> Bower.PackageMeta
+defaultPackageMeta pkgName = Bower.PackageMeta
+  { Bower.bowerName = unsafeMkPackageName pkgName
+  , Bower.bowerDescription = Nothing
+  , Bower.bowerMain = []
+  , Bower.bowerModuleType = []
+  , Bower.bowerLicense = []
+  , Bower.bowerIgnore = []
+  , Bower.bowerKeywords = []
+  , Bower.bowerAuthors = []
+  , Bower.bowerHomepage = Nothing
+  , Bower.bowerRepository = Nothing
+  , Bower.bowerDependencies = []
+  , Bower.bowerDevDependencies = []
+  , Bower.bowerResolutions = []
+  , Bower.bowerPrivate = False
   }
-  deriving (Show, Eq, Ord)
 
+unsafeMkPackageName :: Text -> Bower.PackageName
+unsafeMkPackageName = either (error "Bad package name") id . Bower.mkPackageName
 
-instance A.ToJSON a => A.ToJSON (Package a) where
-  toJSON Package{..} =
-    A.object $
-      [ "version"              .= DV.showVersion pkgVersion
-      , "versionTag"           .= pkgVersionTag
-      , "modules"              .= pkgModules
-      , "moduleMap"            .= D.assocListToJSON P.runModuleName
-                                                  Bower.runPackageName
-                                                  (M.toList pkgModuleMap)
-      , "resolvedDependencies" .= D.assocListToJSON id
-                                                  (T.pack . DV.showVersion)
-                                                  pkgResolvedDependencies
-      , "github"               .= pkgGithub
-      , "uploader"             .= pkgUploader
-      , "compilerVersion"      .= DV.showVersion P.version
-      ] ++
-      fmap (\t -> "tagTime" .= D.formatTime t) (maybeToList pkgTagTime)
-
-type UploadedPackage = Package D.NotYetKnown
-type VerifiedPackage = Package D.GithubUser
-
-
-
-getPackage :: PackageName -> PackageSpec -> IO VerifiedPackage
-getPackage name PackageSpec { repo, version, dependencies } = do
-  -- (pkgVersionTag, pkgVersion) <- publishGetVersion opts
+getPackage :: PackageName -> PackageSpec -> PackagesSpec -> IO VerifiedPackage
+getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
   pkgVersion <- case parseVersion version of
     Just v -> pure v
     Nothing -> error $ ">> couldn't parse version " <> unpack version
@@ -123,17 +97,12 @@ getPackage name PackageSpec { repo, version, dependencies } = do
     Just gh -> pure gh
     Nothing -> error $ "extracting github from " <> show repo
 
-  pkgs <- glob ( "packages/" <> (T.unpack name) <> "/*/src/**/*.purs")
-  traceShowM ("Count for " <> name, length pkgs)
+  pkgs <- pkgGlob name
   pkgdeps <- traverse (\dep ->
     do
-      files <- glob ( "packages/" <> (T.unpack dep) <> "/*/src/**/*.purs")
-      traceShowM ("Count deps for " <> name <> ": " <> dep, length files)
-      depName <- either (error "Bad package name") pure $ Bower.mkPackageName dep
-      pure $ map (depName,) files
+      files <- pkgGlob dep
+      pure $ map (unsafeMkPackageName dep,) files
       ) dependencies
-  traceShowM pkgdeps
-
 
   (modules', moduleMap) <-  either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
   (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage modules' moduleMap) of
@@ -142,23 +111,27 @@ getPackage name PackageSpec { repo, version, dependencies } = do
       traceShowM ("Converting modules", name, err)
       pure ([], mempty)
 
-  -- let (pkgModules, pkgModuleMap) = (modules', mempty) -- <- getModules
-  let pkgMeta = Nothing
+  let pkgResolvedDependencies = map (\pkgName -> (unsafeMkPackageName pkgName, fromMaybe (error $ "couldn't parse version") $ (parseDVVersion =<< getVersion pkgName))) dependencies
+  let pkgMeta = (defaultPackageMeta name) {
+    Bower.bowerDependencies = flip map dependencies $ \packageName ->
+      (unsafeMkPackageName packageName, Bower.VersionRange $ fromMaybe "1.0.0-unknown-version" $ getVersion packageName)
+  }
 
-  -- let declaredDeps = map fst (bowerDependencies pkgMeta ++
-  --                             bowerDevDependencies pkgMeta)
-  -- pkgResolvedDependencies     <- getResolvedDependencies declaredDeps
-  let pkgResolvedDependencies = map (,DV.makeVersion [1,0,0]) dependencies -- TODO
-
-
-  let pkgUploader = D.GithubUser "nwolverson"
+  let pkgUploader = D.GithubUser "nwolverson" -- TODO
   let pkgCompilerVersion = P.version
-
-  traceShowM pkgResolvedDependencies
 
   return Package{..}
 
   where
+    getVersion :: PackageName -> Maybe Version
+    getVersion pkgName = fmap (\(PackageSpec { version }) -> version) $ M.lookup pkgName specs
+
+    parseDVVersion :: Text -> Maybe DV.Version
+    parseDVVersion vVersionString =
+      let versionString = fromMaybe vVersionString (T.stripPrefix "v" vVersionString) in
+      fmap fst $ List.find (null . snd) (readP_to_S DV.parseVersion $ unpack versionString)
+    pkgGlob pkg = glob ("packages/" <> T.unpack pkg <> "/*/src/**/*.purs")
+
     parseVersion str =
       let digits = fromMaybe str (T.stripPrefix "v" str) in
       Just $ fst $ last $ readP_to_S DV.parseVersion (unpack digits)
@@ -170,7 +143,6 @@ getPackage name PackageSpec { repo, version, dependencies } = do
           return r'
         Left err ->
           error "Error parsing files"
-          -- userError (CompileError err)
 
 extractGithub :: Text -> Maybe (D.GithubUser, D.GithubRepo)
 extractGithub = stripGitHubPrefixes
@@ -196,7 +168,6 @@ extractGithub = stripGitHubPrefixes
   dropDotGit str
     | ".git" `T.isSuffixOf` str = T.take (T.length str - 4) str
     | otherwise = str
----
 
 type PackagesSpec = Map PackageName PackageSpec
 
@@ -252,9 +223,9 @@ recursePackageSet ps = do
   for_ (toList ps) $ \(name, pspec@PackageSpec{}) -> do
     let dirFor name = fromMaybe (error $ "verifyPackageSet: no directory " <> unpack name) . (`M.lookup` paths) $ name
     echo (unsafeTextToLine $ "Package " <> name)
-    pkg <- getPackage name pspec
+    pkg <- getPackage name pspec ps
     let dir = fromText "data" </> fromText name
-    mkdir dir
+    mktree dir
     LB.writeFile (encodeString $ dir </> fromString (DV.showVersion $ pkgVersion pkg) <.> "json") (encode pkg)
 
     pure ()
