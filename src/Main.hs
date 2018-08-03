@@ -104,8 +104,8 @@ getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
       pure $ map (unsafeMkPackageName dep,) files
       ) dependencies
 
-  (modules', moduleMap) <-  either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
-  (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage modules' moduleMap) of
+  (modules', moduleMap) <- either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
+  (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
     Right modules -> return (modules, moduleMap)
     Left err -> do
       traceShowM ("Converting modules", name, err)
