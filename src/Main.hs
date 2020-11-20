@@ -5,30 +5,37 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Main where
 
+import Prelude as P
+
 import           Control.Arrow ((&&&))
-import           Control.Exception (finally)
-import qualified Control.Foldl as Fold
+import           Control.Exception (finally, tryJust, toException)
 import           Control.Lens ((<.), toListOf, to, ifolded, withIndex)
 import           Control.Monad (when)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Aeson (FromJSON, ToJSON, decodeStrict, encode, (.=))
-import qualified Data.Aeson as A
+import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 import           Data.ByteString (ByteString)
 import           Data.Foldable (for_)
 import           Data.Map (Map, toList, fromList)
 import qualified Data.Map as M
-import           Data.Maybe (fromMaybe, fromJust, maybeToList)
+import qualified Data.Set as Set
+import           Data.Set (Set)
+import           Data.Maybe (fromMaybe, fromJust, maybeToList, catMaybes, mapMaybe)
 import           Data.Text (Text, unpack)
 import           Data.Text.Encoding (decodeUtf8')
 import           Data.Traversable (for)
+import           Data.Foldable as Foldable
 import           Filesystem.Path ((</>), (<.>))
 import           Filesystem.Path.CurrentOS (fromText, toText, encodeString)
 import           GHC.Generics (Generic)
 import           Turtle
+import           System.IO.Error (tryIOError, isDoesNotExistError)
 import Control.Monad.Except
 import qualified Web.Bower.PackageMeta as Bower
 
@@ -57,6 +64,17 @@ import qualified Data.Text as T
 import qualified Language.PureScript as P
 import Language.PureScript.Docs (Package(..), VerifiedPackage)
 import qualified Language.PureScript.Docs as D
+import qualified Language.PureScript.Docs.Convert as D
+
+import qualified Language.PureScript.Make.Monad as MM
+
+import qualified Language.PureScript.CST as CST
+import qualified Language.PureScript.Ide.Util as IDE
+
+import System.Directory (makeAbsolute) 
+import System.IO.UTF8 (readUTF8FileT)
+import Data.List.NonEmpty (NonEmpty(..))
+import Language.PureScript.Sugar.Names (externsEnv, primEnv)
 
 main :: IO ()
 main = do
@@ -86,11 +104,137 @@ defaultPackageMeta pkgName = Bower.PackageMeta
 unsafeMkPackageName :: Text -> Bower.PackageName
 unsafeMkPackageName = either (error "Bad package name") id . Bower.mkPackageName
 
-getPackage :: PackageName -> PackageSpec -> PackagesSpec -> IO VerifiedPackage
-getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
+getTransitiveDeps :: PackagesSpec -> [PackageName] -> [PackageName]
+getTransitiveDeps db deps =
+  let collected = (map (go Set.empty) deps) :: [Set PackageName]
+  in
+    Set.toList $ Foldable.fold collected
+  -- Set.toList $ Fold.fold $ (go Set.empty) <$> deps
+  where
+    go :: Set PackageName -> PackageName -> Set PackageName
+    go seen pkg
+      | pkg `Set.member` seen =
+          error $ T.unpack ("Cycle in package dependencies at package " <> pkg)
+      | otherwise =
+        case M.lookup pkg db of
+          Nothing ->
+            error $ "Package not found: " <> T.unpack pkg
+            -- T.unpack (pkgNotFoundMsg pkg)
+          Just info@PackageSpec{ dependencies } ->
+            let s = Foldable.fold $ map (go (Set.insert pkg seen)) dependencies
+            in Set.insert pkg s
+
+    -- pkgNotFoundMsg pkg =
+    --   "Package `" <> pkg <> "` does not exist in package set" <> extraHelp
+    --   where
+    --     extraHelp = case suggestedPkg of
+    --       Just pkg' | M.member pkg' db ->
+    --         " (but `" <> pkg' <> "` does, did you mean that instead?)"
+    --       Just pkg' ->
+    --         " (and nor does `" <> pkg' <> "`)"
+    --       Nothing ->
+    --         ""
+
+    --     suggestedPkg = T.stripPrefix "purescript-" pkg
+
+-- getTransitiveDeps :: PackagesSpec -> [PackageName] -> IO [PackageName]
+-- getTransitiveDeps db deps = do
+--   deps <- M.toList . fold <$> traverse (go Set.empty) deps
+--   let deps' = deps -- map snd deps
+--   pure deps'
+--   where
+--     go :: Set PackageName -> IO (Set PackageName)
+--     go seen pkg
+--       | pkg `Set.member` seen =
+--           error $ T.unpack ("Cycle in package dependencies at package " <> pkg)
+--       | otherwise =
+--         case M.lookup pkg db of
+--           Nothing ->
+--             error $ T.unpack (pkgNotFoundMsg pkg)
+--           Just info@PackageSpec{ dependencies } -> do
+--             m <- fold <$> traverse (go (Set.insert pkg seen)) dependencies
+--             return (M.insert pkg info m)
+
+--     pkgNotFoundMsg pkg =
+--       "Package `" <> pkg <> "` does not exist in package set" <> extraHelp
+--       where
+--         extraHelp = case suggestedPkg of
+--           Just pkg' | M.member pkg' db ->
+--             " (but `" <> pkg' <> "` does, did you mean that instead?)"
+--           Just pkg' ->
+--             " (and nor does `" <> pkg' <> "`)"
+--           Nothing ->
+--             ""
+
+--         suggestedPkg = T.stripPrefix "purescript-" pkg
+
+
+
+genPackage :: PackageName -> PackageSpec -> PackagesSpec -> IO VerifiedPackage
+genPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencies }) specs = do
+  let dependencies = getTransitiveDeps specs specifiedDependencies
+  pkgs <- pkgGlob name
+  pkgdeps <- traverse (\dep ->
+    do
+      files <- pkgGlob dep
+      pure $ map (unsafeMkPackageName dep,) files
+      ) dependencies
+
+
+  -- Boilerplate
   pkgVersion <- case parseVersion version of
     Just v -> pure v
-    Nothing -> error $ ">> couldn't parse version " <> unpack version
+    Nothing -> error $ ">> couldn't parse version '" <> unpack version <> "'"
+  let pkgVersionTag = version
+  let pkgTagTime = Nothing
+  pkgGithub <- case extractGithub repo of
+    Just gh -> pure gh
+    Nothing -> error $ "extracting github from " <> show repo
+
+  let pkgResolvedDependencies = map (\pkgName -> (unsafeMkPackageName pkgName, fromMaybe (error $ "couldn't parse version for " <> T.unpack pkgName) $ (parseDVVersion =<< getVersion pkgName))) dependencies
+  let pkgMeta = (defaultPackageMeta name) {
+    Bower.bowerDependencies = flip map dependencies $ \packageName ->
+      (unsafeMkPackageName packageName, Bower.VersionRange $ fromMaybe "1.0.0-unknown-version" $ getVersion packageName)
+  }
+
+  let pkgUploader = D.GithubUser "nwolverson" -- TODO
+  let pkgCompilerVersion = P.version
+
+
+  let allFiles = pkgs <> concatMap (map snd) pkgdeps
+  -- proc "purs" ([ "compile", "--codegen", "docs", quotePkgGlob name ] ++ (map quotePkgGlob dependencies) ) (pure "")
+  (res, warnings) <- MM.runMake P.defaultOptions $ do
+          (pkgModules, pkgModuleMap) <- D.collectDocs "output" pkgs (concat pkgdeps)
+          pure (pkgModules, pkgModuleMap)
+  case res of
+    Left errs -> do
+      -- forM (errs) $ \err -> 
+      (echo . unsafeTextToLine . T.pack . P.prettyPrintMultipleErrors P.defaultPPEOptions) errs
+      error $ "Errors building " <> T.unpack name
+    Right (pkgModules', pkgModuleMap) -> do
+      let pkgModules = map snd pkgModules'
+      return Package{..}
+  
+
+  where
+  pkgGlob pkg = glob ("packages/" <> T.unpack pkg <> "/*/src/**/*.purs")
+  quotePkgGlob pkg = T.pack ("packages/" <> T.unpack pkg <> "/*/src/**/*.purs")
+
+  parseDVVersion :: Text -> Maybe DV.Version
+  parseDVVersion vVersionString =
+    let versionString = fromMaybe vVersionString (T.stripPrefix "v" vVersionString) in
+    fmap fst $ List.find (null . snd) (readP_to_S DV.parseVersion $ unpack versionString)
+
+  getVersion :: PackageName -> Maybe Version
+  getVersion pkgName = fmap (\(PackageSpec { version }) -> version) $ M.lookup pkgName specs
+
+
+getPackage :: PackageName -> PackageSpec -> PackagesSpec -> IO VerifiedPackage
+getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencies }) specs = do
+  let dependencies = getTransitiveDeps specs specifiedDependencies
+  pkgVersion <- case parseVersion version of
+    Just v -> pure v
+    Nothing -> error $ ">> couldn't parse version '" <> unpack version <> "'"
   let pkgVersionTag = version
   let pkgTagTime = Nothing
   pkgGithub <- case extractGithub repo of
@@ -104,14 +248,71 @@ getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
       pure $ map (unsafeMkPackageName dep,) files
       ) dependencies
 
-  (modules', moduleMap) <- either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
-  (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
-    Right modules -> return (modules, moduleMap)
-    Left err -> do
-      traceShowM ("Converting modules", name, err)
-      pure ([], mempty)
+  let allFiles = pkgs <> concatMap (map snd) pkgdeps
+  
+  modules <- forM pkgs $ \pkg -> do
+    (fp, input) <- ideReadFile pkg
+    case CST.parseFromFile fp input of
+      Left (err :| _) ->
+        error $ "Error for " <> fp <> ": " <> 
+          CST.prettyPrintError err
+      Right mod -> pure mod
+  
+  externsFiles <- glob ("packages/output/*/externs.json")
 
-  let pkgResolvedDependencies = map (\pkgName -> (unsafeMkPackageName pkgName, fromMaybe (error $ "couldn't parse version") $ (parseDVVersion =<< getVersion pkgName))) dependencies
+  -- (modules', moduleMap) <- either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
+  externs :: [P.ExternsFile] <- catMaybes <$>  traverse readJSONFile externsFiles
+  let externsMap :: M.Map P.ModuleName P.ExternsFile = M.fromList $ map (\ef -> (P.efModuleName ef, ef)) externs
+  -- D.convertModule
+  -- (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
+  
+  -- (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
+  --   Right modules -> return (modules, moduleMap)
+  --   Left err -> do
+  --     traceShowM ("Converting modules", name, err)
+  --     pure ([], mempty)
+
+
+
+  
+
+  modRes <- forM [head modules] $ \modl ->
+    MM.runMake P.defaultOptions $ do
+       externs' <- sortExterns modl externsMap
+
+       echo $ unsafeTextToLine  $"Module externs: " <> P.runModuleName (P.getModuleName modl) <> " " <> T.pack (show externs')
+
+       exEnv <- fmap fst . runWriterT $ foldM externsEnv primEnv externs'
+      --  echo $ unsafeTextToLine  $ T.pack $ show exEnv
+
+
+       let env = foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs'
+           withPrim = P.importPrim modl
+      --   lint withPrim
+       ((_, env'), _) <- P.runSupplyT 0 $ do
+            P.desugar exEnv externs' [withPrim] >>= \case
+              [desugared] -> P.runCheck' (P.emptyCheckState env) $ P.typeCheckModule desugared
+      
+      -- _ -> internalError "desugar did not return a singleton"
+      --  echo $ unsafeTextToLine $ "Module: " <> P.runModuleName (P.getModuleName modl) <> T.pack (show env')
+
+       modl' <- D.convertModule externs' exEnv env' modl
+      --  echo $ unsafeTextToLine  $ "Converted " <> P.runModuleName  (P.getModuleName modl)
+       pure modl
+  let errs = catMaybes $
+             map ((\case Left x -> Just x 
+                         Right _ -> Nothing) . fst)
+             modRes
+  forM errs $ \err ->
+    echo $ unsafeTextToLine $ T.pack $ P.prettyPrintMultipleErrors P.defaultPPEOptions err
+  -- P.prettyPrintMultipleErrors P.defaultPPEOptions (concatMap fst what)
+    -- -- MM.runMake $
+    --   (Just <$> D.convertModule externs P.initEnvironment modl)
+    --     `catchError` \e -> pure Nothing -- throwError e (toException e)
+
+  
+
+  let pkgResolvedDependencies = map (\pkgName -> (unsafeMkPackageName pkgName, fromMaybe (error $ "couldn't parse version for " <> T.unpack pkgName) $ (parseDVVersion =<< getVersion pkgName))) dependencies
   let pkgMeta = (defaultPackageMeta name) {
     Bower.bowerDependencies = flip map dependencies $ \packageName ->
       (unsafeMkPackageName packageName, Bower.VersionRange $ fromMaybe "1.0.0-unknown-version" $ getVersion packageName)
@@ -123,6 +324,13 @@ getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
   return Package{..}
 
   where
+    ideReadFile' fileReader fp = do
+      absPath <- liftIO (makeAbsolute fp)
+      contents <- liftIO (fileReader absPath)
+      pure (absPath, contents)
+
+    ideReadFile = ideReadFile' readUTF8FileT
+
     getVersion :: PackageName -> Maybe Version
     getVersion pkgName = fmap (\(PackageSpec { version }) -> version) $ M.lookup pkgName specs
 
@@ -132,17 +340,57 @@ getPackage name (PackageSpec{ repo, version, dependencies }) specs = do
       fmap fst $ List.find (null . snd) (readP_to_S DV.parseVersion $ unpack versionString)
     pkgGlob pkg = glob ("packages/" <> T.unpack pkg <> "/*/src/**/*.purs")
 
-    parseVersion str =
-      let digits = fromMaybe str (T.stripPrefix "v" str) in
-      Just $ fst $ last $ readP_to_S DV.parseVersion (unpack digits)
+    
 
-    parseFilesInPackages inputFiles depsFiles = do
-      r <- liftIO . runExceptT $ D.parseFilesInPackages inputFiles depsFiles
-      case r of
-        Right r' ->
-          return r'
+
+    -- sortExterns
+      -- :: (Ide m, MonadError IdeError m)
+      -- => P.Module
+      -- -> ModuleMap P.ExternsFile
+      -- -> m [P.ExternsFile]
+    sortExterns m ex = do
+      sorted' <- runExceptT
+              . P.sortModules P.moduleSignature
+              . (:) m
+              . map mkShallowModule
+              . M.elems
+              . M.delete (P.getModuleName m) $ ex
+      case sorted' of
         Left err ->
-          error "Error parsing files"
+          error "error sorting externs"
+        Right (sorted, graph) -> do
+          let deps = fromJust (List.lookup (P.getModuleName m) graph)
+          pure $ mapMaybe getExtern (deps `inOrderOf` map P.getModuleName sorted)
+      where
+        mkShallowModule P.ExternsFile{..} =
+          P.Module (P.internalModuleSourceSpan "<rebuild>") [] efModuleName (map mkImport efImports) Nothing
+        mkImport (P.ExternsImport mn it iq) =
+          P.ImportDeclaration (P.internalModuleSourceSpan "<rebuild>", []) mn it iq
+        getExtern mn = M.lookup mn ex
+        -- Sort a list so its elements appear in the same order as in another list.
+        inOrderOf :: (Ord a) => [a] -> [a] -> [a]
+        inOrderOf xs ys = let s = Set.fromList xs in filter (`Set.member` s) ys
+    -- parseFilesInPackages inputFiles depsFiles = do
+    --   r <- liftIO . runExceptT $ D.parseFilesInPackages inputFiles depsFiles
+    --   case r of
+    --     Right r' ->
+    --       return r'
+    --     Left err ->
+    --       error "Error parsing files"
+
+catchDoesNotExist :: IO a -> IO (Maybe a)
+catchDoesNotExist inner = do
+  r <- tryJust (guard . isDoesNotExistError) inner
+  case r of
+    Left () ->
+      return Nothing
+    Right x ->
+      return (Just x)
+
+readJSONFile :: Aeson.FromJSON a => P.FilePath -> IO (Maybe a)
+readJSONFile path = do
+    r <- catchDoesNotExist $ Aeson.decodeFileStrict' path
+    return $ join r
 
 extractGithub :: Text -> Maybe (D.GithubUser, D.GithubRepo)
 extractGithub = stripGitHubPrefixes
@@ -189,6 +437,10 @@ decodePackagesSpec = decodeStrict
 getGitRepoList :: PackagesSpec -> [(PackageName, (Repo, Version))]
 getGitRepoList = toListOf ((ifolded <. to (repo &&& version)) . withIndex)
 
+parseVersion str =
+  let digits = fromMaybe str (T.stripPrefix "v" str) in
+  Just $ fst $ last $ readP_to_S DV.parseVersion (unpack digits)
+
 clone :: Repo -> Version -> Turtle.FilePath -> IO ()
 clone repo version into = sh $
     procs "git"
@@ -197,6 +449,8 @@ clone repo version into = sh $
           , "-b", version
           , toTextUnsafe into
           ] empty
+
+
 
 
 toTextUnsafe :: Turtle.FilePath -> Text
@@ -220,10 +474,11 @@ recursePackageSet ps = do
       unless exists $ clone repo version pkgDir
       return (name, pkgDir)))
 
-  for_ (toList ps) $ \(name, pspec@PackageSpec{}) -> do
+  for_ (M.toList ps) $ \(name, pspec@PackageSpec{}) -> do
     let dirFor name = fromMaybe (error $ "verifyPackageSet: no directory " <> unpack name) . (`M.lookup` paths) $ name
     echo (unsafeTextToLine $ "Package " <> name)
-    pkg <- getPackage name pspec ps
+    -- genPackage  name pspec ps
+    pkg <- genPackage name pspec ps
     let dir = fromText "data" </> fromText name
     mktree dir
     LB.writeFile (encodeString $ dir </> fromString (DV.showVersion $ pkgVersion pkg) <.> "json") (encode pkg)

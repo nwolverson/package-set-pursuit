@@ -1,9 +1,38 @@
-resolver: lts-11.7
+resolver: lts-13.26
 packages:
 - '.'
 extra-deps:
-- purescript-0.12.0
-- pipes-http-1.0.5
+- purescript-0.13.6
+- happy-1.19.9
+- language-javascript-0.7.0.0
+- network-3.0.1.1
+- these-1.0.1
+- semialign-1
+
+# - bifunctors-5.5.6@sha256:86968e793240a5a7bd1d5fabcc469c98a1cf6a61b16f90937540353db2b491e3,3329
+# - assoc-1.0.1@sha256:473125ac907b127e929351756ecac7afe4e9708fd64e5f3f042e9c7cb1c194b9,1166
+# - th-abstraction-0.2.11.0@sha256:5c286870277705796887d0cbfa48a6aa5e0f206152592a54fbc550d8ce0c5ab5,1827
+
+
+
+# - bytestring-trie-0.2.5.0
+# - connection-0.3.1
+# - happy-1.19.9
+# - language-javascript-0.6.0.13
+# - network-3.0.1.1
+# - purescript-0.13.4
+# - socks-0.6.0
+
+
+
+# - happy-1.19.9
+# - language-javascript-0.7.0.0
+# - network-3.0.1.1
+# - semialign-1
+# - these-1.0.1
+# - assoc-1.0.1
+# - bifunctors-5.5.6
+# - pipes-http-1.0.5
 # - aeson-0.11.3.0
 # - bower-json-1.0.0.1
 # - http-client-0.4.31.2
@@ -11,5 +40,10 @@ extra-deps:
 # - optparse-applicative-0.13.0.0
 # - pipes-4.1.9
 # - websockets-0.9.6.2
-flags: {}
+flags:
+  aeson-pretty:
+    lib-only: true
+  these:
+    assoc: false
+quickcheck: false
 extra-package-dbs: []
