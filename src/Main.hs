@@ -109,7 +109,6 @@ getTransitiveDeps db deps =
   let collected = (map (go Set.empty) deps) :: [Set PackageName]
   in
     Set.toList $ Foldable.fold collected
-  -- Set.toList $ Fold.fold $ (go Set.empty) <$> deps
   where
     go :: Set PackageName -> PackageName -> Set PackageName
     go seen pkg
@@ -119,7 +118,6 @@ getTransitiveDeps db deps =
         case M.lookup pkg db of
           Nothing ->
             error $ "Package not found: " <> T.unpack pkg
-            -- T.unpack (pkgNotFoundMsg pkg)
           Just info@PackageSpec{ dependencies } ->
             let s = Foldable.fold $ map (go (Set.insert pkg seen)) dependencies
             in Set.insert pkg s
@@ -156,13 +154,11 @@ genPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
 
 
   let allFiles = pkgs <> concatMap (map snd) pkgdeps
-  -- proc "purs" ([ "compile", "--codegen", "docs", quotePkgGlob name ] ++ (map quotePkgGlob dependencies) ) (pure "")
   (res, warnings) <- MM.runMake (P.defaultOptions { P.optionsCodegenTargets = Set.singleton P.CoreFn }) $ do
           (pkgModules, pkgModuleMap) <- D.collectDocs "output" pkgs (concat pkgdeps)
           pure (pkgModules, pkgModuleMap)
   case res of
     Left errs -> do
-      -- forM (errs) $ \err -> 
       (echo . unsafeTextToLine . T.pack . P.prettyPrintMultipleErrors P.defaultPPEOptions) errs
       error $ "Errors building " <> T.unpack name
     Right (pkgModules', pkgModuleMap) -> do
@@ -363,9 +359,6 @@ clone repo version into = sh $
           , toTextUnsafe into
           ] empty
 
-
-
-
 toTextUnsafe :: Turtle.FilePath -> Text
 toTextUnsafe = explode . toText where
   explode = either (error . show) id
@@ -390,7 +383,6 @@ recursePackageSet ps = do
   for_ (M.toList ps) $ \(name, pspec@PackageSpec{}) -> do
     let dirFor name = fromMaybe (error $ "verifyPackageSet: no directory " <> unpack name) . (`M.lookup` paths) $ name
     echo (unsafeTextToLine $ "Package " <> name)
-    -- genPackage  name pspec ps
     pkg <- genPackage name pspec ps
     let dir = fromText "data" </> fromText name
     mktree dir
