@@ -1,0 +1,61 @@
+name: build
+
+on:
+  push:
+    # branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-16.04 ]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Haskell
+        uses: haskell/actions/setup@v1
+        with:
+          ghc-version: '8.6.5'
+          stack-version: 'latest'
+          enable-stack: true
+          stack-no-global: true
+          stack-setup-ghc: true
+      - name: Setup node and npm
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14
+      # NB: We install gnu-tar because BSD tar is buggy on Github's macos machines,
+      # and it breaks the cache: https://github.com/actions/cache/issues/403
+      - name: Install GNU tar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gnu-tar
+          echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> $GITHUB_PATH
+      - name: create ~/.local/bin
+        run: mkdir -p "$HOME/.local/bin"
+      - name: Add ~/.local/bin to PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/.stack
+          key: ${{ runner.os }}-${{ hashFiles('stack.yaml') }}-1
+
+      - name: Install dependencies
+        run: |
+          stack install --dependencies-only
+        shell: bash
+
+      - name: Build
+        run: stack build --pedantic
+        shell: bash
+
+      - name: Install
+        run: stack install
+        shell: bash
+
+      - name: Run tests
+        run: stack test
+        shell: bash
