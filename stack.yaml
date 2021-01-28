@@ -45,5 +45,8 @@ flags:
     lib-only: true
   these:
     assoc: false
-quickcheck: false
+# quickcheck: false
 extra-package-dbs: []
+nix:
+  enable: false
+  shell-file: shell.nix

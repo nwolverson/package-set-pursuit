@@ -203,7 +203,7 @@ genPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
 
   let allFiles = pkgs <> concatMap (map snd) pkgdeps
   -- proc "purs" ([ "compile", "--codegen", "docs", quotePkgGlob name ] ++ (map quotePkgGlob dependencies) ) (pure "")
-  (res, warnings) <- MM.runMake P.defaultOptions $ do
+  (res, warnings) <- MM.runMake (P.defaultOptions { P.optionsCodegenTargets = Set.singleton P.CoreFn }) $ do
           (pkgModules, pkgModuleMap) <- D.collectDocs "output" pkgs (concat pkgdeps)
           pure (pkgModules, pkgModuleMap)
   case res of
