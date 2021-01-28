@@ -124,52 +124,6 @@ getTransitiveDeps db deps =
             let s = Foldable.fold $ map (go (Set.insert pkg seen)) dependencies
             in Set.insert pkg s
 
-    -- pkgNotFoundMsg pkg =
-    --   "Package `" <> pkg <> "` does not exist in package set" <> extraHelp
-    --   where
-    --     extraHelp = case suggestedPkg of
-    --       Just pkg' | M.member pkg' db ->
-    --         " (but `" <> pkg' <> "` does, did you mean that instead?)"
-    --       Just pkg' ->
-    --         " (and nor does `" <> pkg' <> "`)"
-    --       Nothing ->
-    --         ""
-
-    --     suggestedPkg = T.stripPrefix "purescript-" pkg
-
--- getTransitiveDeps :: PackagesSpec -> [PackageName] -> IO [PackageName]
--- getTransitiveDeps db deps = do
---   deps <- M.toList . fold <$> traverse (go Set.empty) deps
---   let deps' = deps -- map snd deps
---   pure deps'
---   where
---     go :: Set PackageName -> IO (Set PackageName)
---     go seen pkg
---       | pkg `Set.member` seen =
---           error $ T.unpack ("Cycle in package dependencies at package " <> pkg)
---       | otherwise =
---         case M.lookup pkg db of
---           Nothing ->
---             error $ T.unpack (pkgNotFoundMsg pkg)
---           Just info@PackageSpec{ dependencies } -> do
---             m <- fold <$> traverse (go (Set.insert pkg seen)) dependencies
---             return (M.insert pkg info m)
-
---     pkgNotFoundMsg pkg =
---       "Package `" <> pkg <> "` does not exist in package set" <> extraHelp
---       where
---         extraHelp = case suggestedPkg of
---           Just pkg' | M.member pkg' db ->
---             " (but `" <> pkg' <> "` does, did you mean that instead?)"
---           Just pkg' ->
---             " (and nor does `" <> pkg' <> "`)"
---           Nothing ->
---             ""
-
---         suggestedPkg = T.stripPrefix "purescript-" pkg
-
-
-
 genPackage :: PackageName -> PackageSpec -> PackagesSpec -> IO VerifiedPackage
 genPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencies }) specs = do
   let dependencies = getTransitiveDeps specs specifiedDependencies
@@ -260,21 +214,8 @@ getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
   
   externsFiles <- glob ("packages/output/*/externs.json")
 
-  -- (modules', moduleMap) <- either (error "parseFiles") fst <$> runPrepareM (parseFilesInPackages pkgs (concat pkgdeps))
   externs :: [P.ExternsFile] <- catMaybes <$>  traverse readJSONFile externsFiles
   let externsMap :: M.Map P.ModuleName P.ExternsFile = M.fromList $ map (\ef -> (P.efModuleName ef, ef)) externs
-  -- D.convertModule
-  -- (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
-  
-  -- (pkgModules, pkgModuleMap) <- case runExcept (D.convertModulesInPackage (map snd modules') moduleMap) of
-  --   Right modules -> return (modules, moduleMap)
-  --   Left err -> do
-  --     traceShowM ("Converting modules", name, err)
-  --     pure ([], mempty)
-
-
-
-  
 
   modRes <- forM [head modules] $ \modl ->
     MM.runMake P.defaultOptions $ do
@@ -283,21 +224,14 @@ getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
        echo $ unsafeTextToLine  $"Module externs: " <> P.runModuleName (P.getModuleName modl) <> " " <> T.pack (show externs')
 
        exEnv <- fmap fst . runWriterT $ foldM externsEnv primEnv externs'
-      --  echo $ unsafeTextToLine  $ T.pack $ show exEnv
-
 
        let env = foldl' (flip P.applyExternsFileToEnvironment) P.initEnvironment externs'
            withPrim = P.importPrim modl
-      --   lint withPrim
        ((_, env'), _) <- P.runSupplyT 0 $ do
             P.desugar exEnv externs' [withPrim] >>= \case
               [desugared] -> P.runCheck' (P.emptyCheckState env) $ P.typeCheckModule desugared
       
-      -- _ -> internalError "desugar did not return a singleton"
-      --  echo $ unsafeTextToLine $ "Module: " <> P.runModuleName (P.getModuleName modl) <> T.pack (show env')
-
        modl' <- D.convertModule externs' exEnv env' modl
-      --  echo $ unsafeTextToLine  $ "Converted " <> P.runModuleName  (P.getModuleName modl)
        pure modl
   let errs = catMaybes $
              map ((\case Left x -> Just x 
@@ -305,12 +239,6 @@ getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
              modRes
   forM errs $ \err ->
     echo $ unsafeTextToLine $ T.pack $ P.prettyPrintMultipleErrors P.defaultPPEOptions err
-  -- P.prettyPrintMultipleErrors P.defaultPPEOptions (concatMap fst what)
-    -- -- MM.runMake $
-    --   (Just <$> D.convertModule externs P.initEnvironment modl)
-    --     `catchError` \e -> pure Nothing -- throwError e (toException e)
-
-  
 
   let pkgResolvedDependencies = map (\pkgName -> (unsafeMkPackageName pkgName, fromMaybe (error $ "couldn't parse version for " <> T.unpack pkgName) $ (parseDVVersion =<< getVersion pkgName))) dependencies
   let pkgMeta = (defaultPackageMeta name) {
@@ -340,14 +268,6 @@ getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
       fmap fst $ List.find (null . snd) (readP_to_S DV.parseVersion $ unpack versionString)
     pkgGlob pkg = glob ("packages/" <> T.unpack pkg <> "/*/src/**/*.purs")
 
-    
-
-
-    -- sortExterns
-      -- :: (Ide m, MonadError IdeError m)
-      -- => P.Module
-      -- -> ModuleMap P.ExternsFile
-      -- -> m [P.ExternsFile]
     sortExterns m ex = do
       sorted' <- runExceptT
               . P.sortModules P.moduleSignature
@@ -370,13 +290,6 @@ getPackage name (PackageSpec{ repo, version, dependencies = specifiedDependencie
         -- Sort a list so its elements appear in the same order as in another list.
         inOrderOf :: (Ord a) => [a] -> [a] -> [a]
         inOrderOf xs ys = let s = Set.fromList xs in filter (`Set.member` s) ys
-    -- parseFilesInPackages inputFiles depsFiles = do
-    --   r <- liftIO . runExceptT $ D.parseFilesInPackages inputFiles depsFiles
-    --   case r of
-    --     Right r' ->
-    --       return r'
-    --     Left err ->
-    --       error "Error parsing files"
 
 catchDoesNotExist :: IO a -> IO (Maybe a)
 catchDoesNotExist inner = do
