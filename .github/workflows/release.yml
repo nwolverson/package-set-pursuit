@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  draft_release:
+    name: Create release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+
+    steps:
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: ${{ github.ref }}
+          body: ""
+          draft: false
+          prerelease: false
+          commitish: master
+
+  build_release:
+    name: Build/upload release
+    needs: draft_release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-16.04 ]
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup Haskell
+        uses: haskell/actions/setup@v1
+        with:
+          ghc-version: '8.6.5'
+          stack-version: 'latest'
+          enable-stack: true
+          stack-no-global: true
+          stack-setup-ghc: true
+      - name: Setup node
+        uses: actions/setup-node@v1
+        with:
+          node-version: 10
+      # NB: We install gnu-tar because BSD tar is buggy on Github's macos machines,
+      # and it breaks the cache: https://github.com/actions/cache/issues/403
+      - name: Install GNU tar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install gnu-tar
+          echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Package binary (Linux and macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          stack install --dependencies-only
+          mkdir artifacts
+          stack build --copy-bins --local-bin-path ./artifacts
+          cp artifacts/package-set-pursuit package-set-pursuit
+          strip package-set-pursuit
+          tar -zcvf "${{ runner.os }}.tar.gz" package-set-pursuit
+
+      - name: Upload Release Asset
+        id: upload-release-asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.draft_release.outputs.upload_url }}
+          asset_path: ./${{ runner.os }}.tar.gz
+          asset_name: ${{ runner.os }}.tar.gz
+          asset_content_type: application/gzip
