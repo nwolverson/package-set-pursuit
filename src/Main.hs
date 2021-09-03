@@ -19,17 +19,14 @@ import           Data.Aeson (FromJSON, ToJSON, decodeStrict, encode)
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 import           Data.ByteString (ByteString)
-import           Data.Foldable (for_)
 import           Data.Map (Map, fromList)
 import qualified Data.Map as M
 import qualified Data.Set as Set
 import           Data.Set (Set)
 import           Data.Maybe (fromMaybe)
-import           Data.Text (Text, unpack)
+import           Data.Text (unpack)
 import           Data.Traversable (for)
 import           Data.Foldable as Foldable
-import           Filesystem.Path ((</>), (<.>))
-import           Filesystem.Path.CurrentOS (fromText, toText, encodeString)
 import           GHC.Generics (Generic)
 import           Turtle hiding (fp, input, x, s, err, env)
 import           System.IO.Error (isDoesNotExistError)

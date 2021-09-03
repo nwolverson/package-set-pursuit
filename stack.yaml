@@ -60,3 +60,5 @@ extra-package-dbs: []
 nix:
   enable: false
   shell-file: shell.nix
+ghc-options:
+  "$locals": -Wall -Werror
