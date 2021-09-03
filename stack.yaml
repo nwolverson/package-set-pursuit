@@ -1,13 +1,18 @@
-resolver: lts-13.26
+resolver: lts-17.6
 packages:
 - '.'
 extra-deps:
-- purescript-0.13.6
-- happy-1.19.9
+# - happy-1.19.9
 - language-javascript-0.7.0.0
-- network-3.0.1.1
-- these-1.0.1
-- semialign-1
+# - network-3.0.1.1
+# - these-1.0.1
+# - semialign-1
+- github: purescript/purescript
+  commit: v0.14.4
+  subdirs:
+    - lib/purescript-cst
+    - '.'
+
 
 # - bifunctors-5.5.6@sha256:86968e793240a5a7bd1d5fabcc469c98a1cf6a61b16f90937540353db2b491e3,3329
 # - assoc-1.0.1@sha256:473125ac907b127e929351756ecac7afe4e9708fd64e5f3f042e9c7cb1c194b9,1166
@@ -45,6 +50,11 @@ flags:
     lib-only: true
   these:
     assoc: false
+  haskeline:
+    # Avoids a libtinfo dynamic library dependency
+    terminfo: false
+  cryptonite:
+    use_target_attributes: false
 # quickcheck: false
 extra-package-dbs: []
 nix:
